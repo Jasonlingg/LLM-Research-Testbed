@@ -20,6 +20,7 @@ from model.attention import MultiHeadAttention
 from model.mlp import MLP
 from model.layernorm import LayerNorm
 from model.embedding import GPT2Embedding
+from optimizations.grouped_query_attention import GroupedQueryAttention
 from config import ModelConfig
 
 
@@ -36,7 +37,10 @@ class TransformerBlock(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.ln_1 = LayerNorm(config.d_model)
-        self.attn = MultiHeadAttention(config.d_model, config.n_heads)
+        if config.use_gqa:
+            self.attn = GroupedQueryAttention(config.d_model, config.n_heads, config.gqa_num_kv_groups)
+        else:
+            self.attn = MultiHeadAttention(config.d_model, config.n_heads)
         self.ln_2 = LayerNorm(config.d_model)
         self.mlp = MLP(config.d_model, config.d_ff)
     

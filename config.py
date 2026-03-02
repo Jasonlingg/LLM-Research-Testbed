@@ -17,7 +17,11 @@ class ModelConfig:
     d_ff: int = 3072          # 4 * d_model
     max_seq_len: int = 1024
     dropout: float = 0.0       # No dropout during inference
-    
+
+    # Optimization flags (set from InferenceConfig)
+    use_gqa: bool = False
+    gqa_num_kv_groups: int = 4
+
     @property
     def d_head(self) -> int:
         return self.d_model // self.n_heads

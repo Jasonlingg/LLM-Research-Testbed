@@ -32,27 +32,41 @@ class GenerationMetrics:
     peak_memory_bytes: int = 0
     per_step_time_ms: List[float] = field(default_factory=list)
     cache_memory_mb: float = 0.0
-    
+    cache_utilization: float = 0.0  # fraction of max_seq_len used
+    prefill_time_ms: float = 0.0
+    decode_time_ms: float = 0.0
+
     @property
     def tokens_per_sec(self) -> float:
         if self.total_time_s == 0:
             return 0.0
         return self.tokens_generated / self.total_time_s
-    
+
     @property
     def avg_step_time_ms(self) -> float:
         if not self.per_step_time_ms:
             return 0.0
         return sum(self.per_step_time_ms) / len(self.per_step_time_ms)
-    
+
+    @property
+    def decode_tokens_per_sec(self) -> float:
+        """Decode-only throughput (excludes prefill)."""
+        if self.decode_time_ms == 0 or self.tokens_generated == 0:
+            return 0.0
+        return (self.tokens_generated - 1) / (self.decode_time_ms / 1000)
+
     def summary(self) -> str:
-        return (
+        s = (
             f"Tokens: {self.tokens_generated} | "
             f"Tok/s: {self.tokens_per_sec:.1f} | "
             f"TTFT: {self.time_to_first_token_ms:.1f}ms | "
-            f"Avg step: {self.avg_step_time_ms:.1f}ms | "
-            f"Cache: {self.cache_memory_mb:.1f}MB"
+            f"Avg step: {self.avg_step_time_ms:.1f}ms"
         )
+        if self.cache_memory_mb > 0:
+            s += f" | Cache: {self.cache_memory_mb:.1f}MB ({self.cache_utilization:.1%} used)"
+        if self.decode_time_ms > 0:
+            s += f" | Decode: {self.decode_tokens_per_sec:.1f} tok/s"
+        return s
 
 
 class Generator:
@@ -227,44 +241,53 @@ class Generator:
         generated_tokens.append(next_token)
         
         metrics.time_to_first_token_ms = prefill_time
+        metrics.prefill_time_ms = prefill_time
         metrics.per_step_time_ms.append(prefill_time)
-        
+
         # === PHASE 2: Decode ===
         # One token at a time, reusing cached K,V
+        decode_start = time.perf_counter()
+
         for i in range(max_new_tokens - 1):
             step_start = time.perf_counter()
-            
+
             # Feed ONLY the new token (not the whole sequence!)
             logits, kv_caches = self.model(
                 next_token,          # [1, 1] — just the new token
                 kv_caches=kv_caches, # reuse cached K,V
                 use_cache=True,
             )
-            
+
             next_logits = logits[:, -1, :]
             next_token = sample_token(next_logits, temperature, top_k, top_p)
             generated_tokens.append(next_token)
-            
+
             step_time = (time.perf_counter() - step_start) * 1000
             metrics.per_step_time_ms.append(step_time)
-            
+
             # Stop on EOS
             if next_token.item() == self.tokenizer.eot_token:
                 break
-        
+
+        metrics.decode_time_ms = (time.perf_counter() - decode_start) * 1000
+
         # Reconstruct full sequence
         new_tokens = torch.cat(generated_tokens, dim=1)
         output_ids = torch.cat([input_ids, new_tokens], dim=1)
-        
+
         metrics.total_time_s = time.perf_counter() - gen_start
         metrics.tokens_generated = new_tokens.shape[1]
-        
-        # Cache memory tracking
+
+        # Cache memory tracking and utilization
         if kv_caches and kv_caches[0] is not None:
             k, v = kv_caches[0]
             per_layer_bytes = k.nelement() * k.element_size() * 2  # K + V
             metrics.cache_memory_mb = (per_layer_bytes * len(kv_caches)) / (1024 * 1024)
-        
+
+            # Calculate utilization: how much of max_seq_len is actually used
+            total_seq_len = input_ids.shape[1] + new_tokens.shape[1]
+            metrics.cache_utilization = total_seq_len / self.config.model.max_seq_len
+
         return output_ids, metrics
 
 
