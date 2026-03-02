@@ -76,5 +76,4 @@ python -m demo.app
 
 3. **Correctness first.** Before any optimization, `test_correctness.py` verifies my implementation produces identical logits to HuggingFace's GPT-2. If the baseline is wrong, every optimization result is meaningless.
 
-## Blog Post
-[Read the technical writeup](#) *(link after publishing)*
+
