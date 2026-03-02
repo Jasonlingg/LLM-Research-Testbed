@@ -84,18 +84,26 @@ def load_pretrained_weights(model: GPT2, model_name: str = "gpt2") -> GPT2:
         
         hf_tensor = hf_state[hf_key]
         our_tensor = our_state[our_key]
-        
-        # HF's GPT-2 uses Conv1D which stores weights transposed
-        # Conv1D weight: [out_features, in_features] but stored as [in_features, out_features]
-        # Our Linear weight: [out_features, in_features]
+
+        # HF's GPT-2 uses Conv1D for all linear projections in attention and MLP
+        # Conv1D stores weights as [in_features, out_features]
+        # Our nn.Linear expects [out_features, in_features]
+        # We need to transpose ALL Conv1D weights, even square ones (attn.c_proj)
+        is_conv1d_weight = (
+            ".weight" in hf_key and
+            len(hf_tensor.shape) == 2 and
+            ("attn.c_attn" in hf_key or "attn.c_proj" in hf_key or
+             "mlp.c_fc" in hf_key or "mlp.c_proj" in hf_key)
+        )
+
+        if is_conv1d_weight:
+            hf_tensor = hf_tensor.T
+
+        # Verify shapes match after transpose
         if hf_tensor.shape != our_tensor.shape:
-            if hf_tensor.shape == our_tensor.shape[::-1] or \
-               (len(hf_tensor.shape) == 2 and hf_tensor.T.shape == our_tensor.shape):
-                hf_tensor = hf_tensor.T
-            else:
-                print(f"  Shape mismatch: {hf_key} {hf_tensor.shape} vs {our_key} {our_tensor.shape}")
-                continue
-        
+            print(f"  Shape mismatch: {hf_key} {hf_tensor.shape} vs {our_key} {our_tensor.shape}")
+            continue
+
         our_state[our_key] = hf_tensor
         loaded += 1
     
