@@ -16,8 +16,7 @@ No `model.generate()`. No HuggingFace at runtime.
 > Fill in after running `python -m benchmarks.harness`
 
 ## Live Demo
-[Try it on HuggingFace Spaces](#) *(deploy after completion)*
-
+(coming soon)
 ## Architecture
 
 ```
