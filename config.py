@@ -21,6 +21,7 @@ class ModelConfig:
     # Optimization flags (set from InferenceConfig)
     use_gqa: bool = False
     gqa_num_kv_groups: int = 4
+    use_flash_attn: bool = False
 
     @property
     def d_head(self) -> int:
@@ -41,7 +42,11 @@ class InferenceConfig:
     # Grouped-Query Attention
     use_gqa: bool = False
     gqa_num_kv_groups: int = 4    # 12 query heads → 4 KV groups
-    
+
+    # Flash Attention
+    use_flash_attn: bool = False
+    flash_block_size: int = 64    # Tile size for online softmax (Br = Bc)
+
     # Speculative Decoding
     use_speculative: bool = False
     spec_draft_n_layers: int = 4   # Draft model: first 4 layers of GPT-2
@@ -58,6 +63,8 @@ class InferenceConfig:
         parts = ["Baseline"]
         if self.use_kv_cache:
             parts = ["KV Cache"]
+        if self.use_flash_attn:
+            parts.append("FlashAttn")
         if self.use_gqa:
             parts.append(f"GQA({self.gqa_num_kv_groups}g)")
         if self.use_speculative:
@@ -69,6 +76,7 @@ class InferenceConfig:
 BENCHMARK_CONFIGS = {
     "baseline": InferenceConfig(use_kv_cache=False),
     "kv_cache": InferenceConfig(use_kv_cache=True),
+    "flash_attn": InferenceConfig(use_kv_cache=True, use_flash_attn=True),
     "kv_cache_gqa": InferenceConfig(use_kv_cache=True, use_gqa=True, gqa_num_kv_groups=4),
     "kv_cache_spec": InferenceConfig(use_kv_cache=True, use_speculative=True),
     "all": InferenceConfig(use_kv_cache=True, use_gqa=True, gqa_num_kv_groups=4, use_speculative=True),
