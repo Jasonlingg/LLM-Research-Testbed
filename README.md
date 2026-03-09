@@ -1,3 +1,14 @@
+---
+title: Inference Engine
+emoji: ⚡
+colorFrom: blue
+colorTo: cyan
+sdk: gradio
+sdk_version: 4.44.0
+app_file: demo/app.py
+pinned: false
+---
+
 # LLM Inference Engine — From Scratch
 
 Fast, optimized inference for GPT-2 124M built entirely from raw PyTorch operations.  
