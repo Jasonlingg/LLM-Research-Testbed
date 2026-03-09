@@ -135,10 +135,15 @@ def create_model(model_name: str = "gpt2", device: str = "cpu", config=None) -> 
     if config is None:
         config = InferenceConfig()
 
-    # Always build with MHA so weight_loader can populate c_attn/c_proj
-    model_config = ModelConfig()
+    # Always build with standard MHA first so weight_loader can populate c_attn/c_proj.
+    # FlashAttention shares identical attribute names (c_attn, c_proj) so we can
+    # build with use_flash_attn directly — no separate conversion step needed.
+    model_config = ModelConfig(use_flash_attn=config.use_flash_attn)
     model = GPT2(model_config)
     model = load_pretrained_weights(model, model_name)
+
+    if config.use_flash_attn:
+        print(f"  FlashAttn: tiled online-softmax (block_size={config.flash_block_size})")
 
     if config.use_gqa:
         from model.gqa_converter import convert_model_to_gqa

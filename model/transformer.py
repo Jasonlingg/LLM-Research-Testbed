@@ -21,6 +21,7 @@ from model.mlp import MLP
 from model.layernorm import LayerNorm
 from model.embedding import GPT2Embedding
 from optimizations.grouped_query_attention import GroupedQueryAttention
+from optimizations.flash_attention import FlashAttention
 from config import ModelConfig
 
 
@@ -37,7 +38,9 @@ class TransformerBlock(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.ln_1 = LayerNorm(config.d_model)
-        if config.use_gqa:
+        if config.use_flash_attn:
+            self.attn = FlashAttention(config.d_model, config.n_heads)
+        elif config.use_gqa:
             self.attn = GroupedQueryAttention(config.d_model, config.n_heads, config.gqa_num_kv_groups)
         else:
             self.attn = MultiHeadAttention(config.d_model, config.n_heads)
