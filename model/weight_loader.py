@@ -120,18 +120,34 @@ def load_pretrained_weights(model: GPT2, model_name: str = "gpt2") -> GPT2:
     return model
 
 
-def create_model(model_name: str = "gpt2", device: str = "cpu") -> GPT2:
+def create_model(model_name: str = "gpt2", device: str = "cpu", config=None) -> GPT2:
     """
     Convenience function: create model and load pretrained weights.
-    
+
+    Always loads into a standard MHA model first (weight_loader maps to c_attn
+    keys that only exist on MultiHeadAttention), then converts to GQA if requested.
+
     Usage:
         model = create_model("gpt2", device="cuda")
+        model = create_model("gpt2", config=InferenceConfig(use_gqa=True))
     """
-    config = ModelConfig()
-    model = GPT2(config)
+    from config import InferenceConfig
+    if config is None:
+        config = InferenceConfig()
+
+    # Always build with MHA so weight_loader can populate c_attn/c_proj
+    model_config = ModelConfig()
+    model = GPT2(model_config)
     model = load_pretrained_weights(model, model_name)
+
+    if config.use_gqa:
+        from model.gqa_converter import convert_model_to_gqa
+        model = convert_model_to_gqa(model, config.gqa_num_kv_groups)
+        reduction = model_config.n_heads // config.gqa_num_kv_groups
+        print(f"  GQA: {model_config.n_heads} heads → {config.gqa_num_kv_groups} KV groups ({reduction}x cache reduction)")
+
     model = model.to(device)
     model.eval()
-    
+
     print(f"  Model ready: {model.num_parameters / 1e6:.1f}M parameters on {device}")
     return model
