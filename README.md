@@ -1,12 +1,13 @@
 ---
-title: Inference Engine
-emoji: ⚡
-colorFrom: blue
-colorTo: cyan
+title: Gpt2-Forge-Testbed
+emoji: 🔥
+colorFrom: pink
+colorTo: pink
 sdk: gradio
-sdk_version: 4.44.0
+sdk_version: 6.9.0
 app_file: demo/app.py
 pinned: false
+license: apache-2.0
 ---
 
 # LLM Inference Engine — From Scratch
