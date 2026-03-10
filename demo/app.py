@@ -301,17 +301,19 @@ def _stream_tokens(model, prompt, config):
 
 def generate_streaming(prompt, max_tokens, temperature, use_kv_cache, use_gqa, use_flash_attn):
     """
-    Gradio generator: yields (text, metrics_html) pairs.
-    Runs baseline first (blocking), then streams optimized generation live.
+    Gradio generator: yields (text, baseline_html, live_html) triples.
+
+    Baseline and live cards are separate gr.HTML components so Gradio only
+    re-renders the live card on each token — no full-container flash.
     """
     if not prompt.strip():
-        yield "", EMPTY_HTML
+        yield "", EMPTY_HTML, ""
         return
 
-    # Step 1: show loading
-    yield "", loading_card("BASELINE", "Running baseline (naive, no cache)...", "#ff6b35")
+    # Step 1: show loading in baseline slot
+    yield "", loading_card("BASELINE", "Running baseline (naive, no cache)...", "#ff6b35"), ""
 
-    # Step 2: Run baseline (fast, capped at 30 tokens)
+    # Step 2: run baseline (capped at 30 tokens)
     baseline_config = InferenceConfig(
         use_kv_cache=False,
         max_new_tokens=min(int(max_tokens), 30),
@@ -327,7 +329,6 @@ def generate_streaming(prompt, max_tokens, temperature, use_kv_cache, use_gqa, u
         accent="#ff6b35", icon="◇",
     )
 
-    # Step 3: show baseline + start optimized
     parts = []
     if use_kv_cache:   parts.append("KV Cache")
     if use_flash_attn: parts.append("Flash Attn")
@@ -335,9 +336,10 @@ def generate_streaming(prompt, max_tokens, temperature, use_kv_cache, use_gqa, u
     if not parts:      parts.append("Naive")
     opt_label = " + ".join(parts)
 
-    yield "", b_card + loading_card("OPTIMIZED", f"Streaming {opt_label}...", "#00d4ff")
+    # Step 3: baseline is done, show loading in live slot
+    yield "", b_card, loading_card("OPTIMIZED", f"Streaming {opt_label}...", "#00d4ff")
 
-    # Step 4: stream optimized
+    # Step 4: stream optimized — only live_html updates each token
     if use_flash_attn:
         model = MODEL_FLASH
     elif use_gqa:
@@ -358,11 +360,11 @@ def generate_streaming(prompt, max_tokens, temperature, use_kv_cache, use_gqa, u
         speedup = lm["tok_s"] / max(bm.tokens_per_sec, 1e-6)
         live_card = metric_card(
             "OPTIMIZED",
-            f"{opt_label} · {lm['n']} tokens so far · {DEVICE}",
+            f"{opt_label} · {lm['n']} tokens · {DEVICE}",
             lm["tok_s"], lm["ttft"], lm["step_ms"], lm["mem_mb"],
             accent="#00d4ff", icon="◆", speedup=speedup,
         )
-        yield text, b_card + live_card
+        yield text, b_card, live_card
 
 
 # ── Profiler ──────────────────────────────────────────────────────────────────
@@ -429,10 +431,32 @@ with gr.Blocks(css=CSS, title="Inference Engine") as demo:
                     gr.HTML(f'<div style="{SECTION};margin-top:20px;">◆ OPTIMIZATIONS</div>')
                     use_kv_cache   = gr.Checkbox(value=True,  label="KV Cache  ·  O(1) decode vs O(n²) naive")
                     use_flash_attn = gr.Checkbox(value=False, label="Flash Attention  ·  tiled online-softmax, O(N) memory")
-                    use_gqa        = gr.Checkbox(value=False, label="Grouped-Query Attention  ·  3× smaller KV cache")
+                    use_gqa        = gr.Checkbox(value=False, label="Grouped-Query Attention  ·  3× smaller KV cache  (requires KV cache)")
+
+                    constraint_note = gr.HTML("")
 
                     gr.HTML('<div style="margin-top:20px;"></div>')
                     run_btn = gr.Button("▶  RUN BENCHMARK", variant="primary", size="lg")
+
+                    # GQA checked → force KV cache on
+                    use_gqa.change(
+                        fn=lambda gqa, kv: (True, "") if gqa else (kv, ""),
+                        inputs=[use_gqa, use_kv_cache],
+                        outputs=[use_kv_cache, constraint_note],
+                    )
+
+                    # KV cache unchecked → force GQA off, show explanation
+                    def on_kv_change(kv, gqa):
+                        if not kv and gqa:
+                            note = '<div style="font-size:10px;color:#ff6b35;padding:6px 0;">GQA disabled — it only reduces KV cache memory, so it requires KV cache to be on.</div>'
+                            return False, note
+                        return gqa, ""
+
+                    use_kv_cache.change(
+                        fn=on_kv_change,
+                        inputs=[use_kv_cache, use_gqa],
+                        outputs=[use_gqa, constraint_note],
+                    )
 
                     gr.HTML("""
                     <div style="margin-top:20px;padding:14px 16px;background:#0d1117;border:1px solid #21262d;border-radius:6px;font-size:11px;color:#30363d;line-height:1.8;">
@@ -443,7 +467,8 @@ with gr.Blocks(css=CSS, title="Inference Engine") as demo:
 
                 # Right: outputs
                 with gr.Column(scale=1):
-                    metrics_html = gr.HTML(EMPTY_HTML)
+                    baseline_html = gr.HTML(EMPTY_HTML)
+                    live_html     = gr.HTML("")
                     gr.HTML(f'<div style="{SECTION};margin-top:20px;">◆ GENERATED TEXT</div>')
                     output_text = gr.Textbox(
                         label="", lines=8, show_label=False,
@@ -453,7 +478,7 @@ with gr.Blocks(css=CSS, title="Inference Engine") as demo:
             run_btn.click(
                 fn=generate_streaming,
                 inputs=[prompt, max_tokens, temperature, use_kv_cache, use_gqa, use_flash_attn],
-                outputs=[output_text, metrics_html],
+                outputs=[output_text, baseline_html, live_html],
             )
 
         # ── Tab 2: Profiler ───────────────────────────────────────────────────
