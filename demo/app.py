@@ -504,22 +504,11 @@ def _ppl_table_html(results, baseline_ppl, num_tokens, done=False):
           </div>
         </div>"""
 
-    insight = ""
-    if done and len(results) >= 2:
-        flash_ppl = next((p for n, p in results if "Flash" in n), None)
-        gqa_ppl   = next((p for n, p in results if "GQA" in n), None)
-        insight = f"""
-        <div style="margin-top:20px;padding:14px 16px;background:#0d1117;border:1px solid #21262d;border-left:3px solid #a371f7;border-radius:6px;font-size:11px;color:#6e7681;line-height:1.8;">
-          <div style="color:#a371f7;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;margin-bottom:8px;">◆ INSIGHT</div>
-          {"<b style='color:#c9d1d9;'>Flash Attention</b> matches MHA exactly — it's a mathematically equivalent reformulation, just tiled differently in memory.<br/>" if flash_ppl and abs(flash_ppl - baseline_ppl) < 0.01 else ""}
-          {"<b style='color:#ff6b35;'>GQA</b> shows significant perplexity degradation because GPT-2 was trained with full MHA. GQA requires training-time co-design (Llama 2/3, Mistral) to maintain quality — weight averaging alone is too lossy." if gqa_ppl and gqa_ppl > baseline_ppl * 2 else ""}
-        </div>"""
-
     return f"""
     <div style="font-size:9px;color:#30363d;letter-spacing:0.18em;text-transform:uppercase;margin-bottom:20px;">
       {status} — WikiText-2 · {num_tokens} tokens · lower perplexity = better
     </div>
-    {rows}{insight}"""
+    {rows}"""
 
 
 # ── Build UI ──────────────────────────────────────────────────────────────────
