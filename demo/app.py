@@ -46,7 +46,8 @@ for p_flash, p_mha in zip(MODEL_FLASH.parameters(), MODEL_MHA.parameters()):
     p_flash.data = p_mha.data  # shared storage — zero extra memory
 print("  Flash Attention: weights shared with MHA (no extra memory)")
 
-# GQA has different architecture (reduced K/V projections) — needs own weights
+# GQA has a different architecture (reduced K/V projections) so it needs
+# its own weight conversion from the MHA checkpoint.
 MODEL_GQA = create_model("gpt2", device=DEVICE, config=InferenceConfig(use_gqa=True))
 print("All models ready.\n")
 
@@ -419,6 +420,108 @@ def run_profiler(prompt, use_flash_attn, use_gqa):
     return header + profiler_html(events, total_ms)
 
 
+# ── Perplexity ────────────────────────────────────────────────────────────────
+
+def run_perplexity(num_tokens):
+    """
+    Generator: yields HTML table as each config finishes.
+    Reuses already-loaded models — no reload needed.
+    """
+    import math
+    import torch.nn.functional as F
+    from datasets import load_dataset
+
+    enc = TOKENIZER
+    num_tokens = int(num_tokens)
+
+    yield loading_card("PERPLEXITY", "Loading WikiText-2 test set...", "#a371f7")
+
+    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    text = "\n\n".join(t for t in dataset["text"] if t.strip())
+    tokens = enc.encode(text)[:num_tokens]
+
+    configs = [
+        ("MHA (baseline)",   MODEL_MHA),
+        ("Flash Attention",  MODEL_FLASH),
+        ("GQA (4 groups)",   MODEL_GQA),
+    ]
+
+    results = []
+    baseline_ppl = None
+
+    for name, model in configs:
+        yield loading_card("PERPLEXITY", f"Evaluating {name} on {len(tokens)} tokens...", "#a371f7")
+
+        total_nll, total_toks = 0.0, 0
+        chunk_size, stride = 1024, 512
+
+        with torch.no_grad():
+            for start in range(0, len(tokens) - 1, stride):
+                chunk = tokens[start: start + chunk_size]
+                if len(chunk) < 2:
+                    break
+                input_ids = torch.tensor([chunk], dtype=torch.long, device=DEVICE)
+                logits, _ = model(input_ids, use_cache=False)
+                shift_logits = logits[0, :-1].contiguous()
+                shift_labels = input_ids[0, 1:].contiguous()
+                total_nll += F.cross_entropy(shift_logits, shift_labels, reduction="sum").item()
+                total_toks += shift_labels.shape[0]
+
+        ppl = math.exp(total_nll / total_toks)
+        if baseline_ppl is None:
+            baseline_ppl = ppl
+        results.append((name, ppl))
+
+        # Render table so far
+        yield _ppl_table_html(results, baseline_ppl, num_tokens)
+
+    yield _ppl_table_html(results, baseline_ppl, num_tokens, done=True)
+
+
+def _ppl_table_html(results, baseline_ppl, num_tokens, done=False):
+    status = "◆ COMPLETE" if done else "◆ RUNNING..."
+    rows = ""
+    max_ppl = max(ppl for _, ppl in results) if results else 1
+
+    for name, ppl in results:
+        delta = ((ppl - baseline_ppl) / baseline_ppl) * 100
+        delta_str = "—" if ppl == baseline_ppl else f"{delta:+.1f}%"
+        delta_color = "#c9d1d9" if ppl == baseline_ppl else ("#ff6b35" if delta > 5 else "#f0c040")
+        bar_pct = min(100, (ppl / max_ppl) * 100)
+        bar_color = "#00d4ff" if ppl == baseline_ppl else "#ff6b35"
+
+        rows += f"""
+        <div style="margin-bottom:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+            <span style="font-size:11px;color:#c9d1d9;">{name}</span>
+            <span>
+              <span style="font-size:22px;font-weight:700;color:{bar_color};">{ppl:.2f}</span>
+              <span style="font-size:10px;color:{delta_color};margin-left:8px;">{delta_str}</span>
+            </span>
+          </div>
+          <div style="height:3px;background:#161b22;border-radius:2px;">
+            <div style="height:100%;width:{bar_pct:.1f}%;background:{bar_color};border-radius:2px;"></div>
+          </div>
+        </div>"""
+
+    insight = ""
+    if done and len(results) >= 2:
+        flash_ppl = next((p for n, p in results if "Flash" in n), None)
+        gqa_ppl   = next((p for n, p in results if "GQA" in n), None)
+        insight = f"""
+        <div style="margin-top:20px;padding:14px 16px;background:#0d1117;border:1px solid #21262d;border-left:3px solid #a371f7;border-radius:6px;font-size:11px;color:#6e7681;line-height:1.8;">
+          <div style="color:#a371f7;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;margin-bottom:8px;">◆ INSIGHT</div>
+          {"<b style='color:#c9d1d9;'>Flash Attention</b> matches MHA exactly — it's a mathematically equivalent reformulation, just tiled differently in memory.<br/>" if flash_ppl and abs(flash_ppl - baseline_ppl) < 0.01 else ""}
+          {"<b style='color:#ff6b35;'>GQA</b> shows significant perplexity degradation because GPT-2 was trained with full MHA. GQA requires training-time co-design (Llama 2/3, Mistral) to maintain quality — weight averaging alone is too lossy." if gqa_ppl and gqa_ppl > baseline_ppl * 2 else ""}
+        </div>"""
+
+    return f"""
+    <div style="font-size:9px;color:#30363d;letter-spacing:0.18em;text-transform:uppercase;margin-bottom:20px;">
+      {status} — WikiText-2 · {num_tokens} tokens · lower perplexity = better
+    </div>
+    {rows}{insight}"""
+
+
 # ── Build UI ──────────────────────────────────────────────────────────────────
 
 with gr.Blocks(css=CSS, title="Inference Engine") as demo:
@@ -538,6 +641,45 @@ with gr.Blocks(css=CSS, title="Inference Engine") as demo:
                 fn=run_profiler,
                 inputs=[prof_prompt, prof_flash, prof_gqa],
                 outputs=[prof_output],
+            )
+
+        # ── Tab 3: Perplexity ─────────────────────────────────────────────────
+        with gr.Tab("Perplexity"):
+            gr.HTML(f"""
+            <div style="padding:24px 0 16px 0;border-bottom:1px solid #21262d;margin-bottom:24px;">
+              <div style="{SECTION}">◆ QUALITY EVALUATION</div>
+              <div style="font-size:13px;color:#6e7681;line-height:1.7;max-width:560px;margin-top:8px;">
+                Measures perplexity on WikiText-2 test set across all attention variants.
+                Perplexity = exp(mean NLL loss) — lower is better. Quantifies the quality
+                cost of each optimization, not just the speed gain.
+              </div>
+            </div>""")
+
+            with gr.Row():
+                with gr.Column(scale=1):
+                    ppl_tokens = gr.Slider(512, 8192, value=2048, step=512,
+                                           label="Tokens to evaluate (more = slower but more accurate)")
+                    gr.HTML('<div style="margin-top:16px;"></div>')
+                    ppl_btn = gr.Button("▶  RUN PERPLEXITY", variant="primary", size="lg")
+                    gr.HTML("""
+                    <div style="margin-top:16px;padding:14px 16px;background:#0d1117;border:1px solid #21262d;border-radius:6px;font-size:11px;color:#30363d;line-height:1.8;">
+                      Evaluates MHA → Flash Attn → GQA in sequence.<br/>
+                      Each config runs a forward pass over the selected<br/>
+                      number of WikiText-2 tokens.<br/><br/>
+                      <span style="color:#6e7681;">~10-30s per config on CPU</span>
+                    </div>""")
+
+                with gr.Column(scale=2):
+                    ppl_output = gr.HTML("""
+                    <div style="border:1px dashed #21262d;border-radius:8px;padding:48px 24px;text-align:center;color:#30363d;font-size:11px;letter-spacing:0.12em;line-height:2;">
+                      ◇ PERPLEXITY RESULTS APPEAR HERE<br/>
+                      <span style="font-size:10px;color:#21262d;">results stream in as each config finishes</span>
+                    </div>""")
+
+            ppl_btn.click(
+                fn=run_perplexity,
+                inputs=[ppl_tokens],
+                outputs=[ppl_output],
             )
 
     # Footer
