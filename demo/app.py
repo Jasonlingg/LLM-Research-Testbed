@@ -539,7 +539,7 @@ with gr.Blocks(css=CSS, title="Inference Engine") as demo:
                     gr.HTML(f'<div style="{SECTION};margin-top:20px;">◆ OPTIMIZATIONS</div>')
                     use_kv_cache   = gr.Checkbox(value=True,  label="KV Cache  ·  O(1) decode vs O(n²) naive")
                     use_flash_attn = gr.Checkbox(value=False, label="Flash Attention  ·  tiled online-softmax, O(N) memory")
-                    use_gqa        = gr.Checkbox(value=False, label="Grouped-Query Attention  ·  3× smaller KV cache  (requires KV cache)")
+                    use_gqa        = gr.Checkbox(value=False, label="Grouped-Query Attention  ·  3× smaller KV cache  (requires KV cache; degrades quality on GPT-2 — see Perplexity tab)")
 
                     constraint_note = gr.HTML("")
 
