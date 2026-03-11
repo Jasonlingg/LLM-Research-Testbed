@@ -19,9 +19,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gradio as gr
 from model.weight_loader import create_model
+from model.transformer import GPT2
 from generation.base_generator import Generator, GenerationMetrics
 from generation.sampling import sample_token
-from config import InferenceConfig
+from config import InferenceConfig, ModelConfig
 
 
 # ── Model loading ─────────────────────────────────────────────────────────────
@@ -29,9 +30,24 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 TOKENIZER = tiktoken.get_encoding("gpt2")
 
 print(f"Loading models on {DEVICE}...")
-MODEL_MHA   = create_model("gpt2", device=DEVICE)
-MODEL_GQA   = create_model("gpt2", device=DEVICE, config=InferenceConfig(use_gqa=True))
-MODEL_FLASH = create_model("gpt2", device=DEVICE, config=InferenceConfig(use_flash_attn=True))
+
+# Load weights once via MHA
+MODEL_MHA = create_model("gpt2", device=DEVICE)
+
+# Flash Attention shares identical weights with MHA — only the forward
+# computation differs (tiled online-softmax vs standard attention).
+# Build the Flash architecture, copy state from MHA (no second HF download),
+# then share the underlying tensor storage so both use the same memory.
+_flash_config = ModelConfig(use_flash_attn=True)
+MODEL_FLASH = GPT2(_flash_config).to(DEVICE)
+MODEL_FLASH.load_state_dict(MODEL_MHA.state_dict())
+MODEL_FLASH.eval()
+for p_flash, p_mha in zip(MODEL_FLASH.parameters(), MODEL_MHA.parameters()):
+    p_flash.data = p_mha.data  # shared storage — zero extra memory
+print("  Flash Attention: weights shared with MHA (no extra memory)")
+
+# GQA has different architecture (reduced K/V projections) — needs own weights
+MODEL_GQA = create_model("gpt2", device=DEVICE, config=InferenceConfig(use_gqa=True))
 print("All models ready.\n")
 
 
